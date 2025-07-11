@@ -2,5 +2,172 @@ import azure.functions as func
 import datetime
 import json
 import logging
+import os
+from azure.storage.blob import BlobServiceClient
+import io
+import chromadb
+import pdfplumber
+#from sentence_transformers import SentenceTransformer
+#from langchain.embeddings import SentenceTransformerEmbeddings
 
 app = func.FunctionApp()
+
+
+def UploadExtractedText(text: str, pmcId: str) -> None:
+    """
+    Upload the extracted text to an Azure Blob Storage container.
+
+    Args:
+        text (str): The text to upload
+
+    Raises:
+        Exception: If blob upload fails
+    """
+    try:
+        # Get connection string from environment variables
+        connection_string = os.getenv("StorageConnectionString")
+        if not connection_string:
+            raise ValueError("StorageConnectionString environment variable not set")
+
+        # Create BlobServiceClient
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+
+        # Get container name from environment variables
+        container_name = os.getenv("ExtractedTextContainer")
+        if not container_name:
+            raise ValueError("ExtractedTextContainer environment variable not set")
+
+        # Create a blob client
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=f"{pmcId}.txt")
+
+        # Upload the text
+        logging.info(f"Uploading extracted text to blob in container: {container_name}")
+        blob_client.upload_blob(text, overwrite=True)
+
+        logging.info("Successfully uploaded extracted text to blob")
+    except Exception as e:
+        logging.error(f"Failed to upload extracted text: {str(e)}")
+        raise
+
+def download_blob_by_name(blob_name: str, container_name: str) -> bytes:
+    """
+    Download an Azure blob by blob name and return the blob contents as bytes.
+
+    Args:
+        blob_name (str): The name of the blob to download
+        container_name (str): The name of the container containing the blob
+
+    Returns:
+        bytes: The blob contents as bytes
+
+    Raises:
+        Exception: If blob download fails
+    """
+    try:
+        # Get connection string from environment variables
+        connection_string = os.getenv("StorageConnectionString")
+        if not connection_string:
+            raise ValueError("StorageConnectionString environment variable not set")
+
+        # Create BlobServiceClient
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+
+        # Get blob client
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+
+        # Download blob contents
+        logging.info(f"Downloading blob: {blob_name} from container: {container_name}")
+        blob_contents = blob_client.download_blob().readall()
+
+        logging.info(f"Successfully downloaded blob: {blob_name}, size: {len(blob_contents)} bytes")
+        return blob_contents
+
+    except Exception as e:
+        logging.error(f"Failed to download blob {blob_name}: {str(e)}")
+        raise
+
+
+@app.service_bus_queue_trigger(arg_name="azservicebus", queue_name="extract-document-text",
+                               connection="ServicebusListener")
+@app.service_bus_topic_output(arg_name="output_message", topic_name="text-extracted",
+                                connection="ServicebusSender")
+def ExtractDocumentTextHandler(azservicebus: func.ServiceBusMessage, output_message: func.Out[str]) -> None:
+
+    message_body = azservicebus.get_body().decode('utf-8')
+    logging.info('Received message: %s', message_body)
+
+    parsed_message = json.loads(message_body)
+
+    response_message = {
+        "fileName": parsed_message.get("FileName"),
+        "title": parsed_message.get("Title"),
+        "pmcId": parsed_message.get("PmcId"),
+        "doi": parsed_message.get("Doi"),
+    }
+
+    logging.info("Processing message: %s", response_message)
+    storage_container = os.getenv("StorageContainerName")
+    if not storage_container:
+        logging.error("StorageContainerName environment variable not set")
+        raise ValueError("StorageContainerName environment variable not set")
+
+    logging.info(f"Downloading blob: {response_message['fileName']} from container: {storage_container}")
+    blob_contents = download_blob_by_name(response_message["fileName"], storage_container)
+
+    processed_text = ProcessPdfText(blob_contents)
+    logging.info(f"Processed text length: {len(processed_text)} characters")
+    #IndexDocument(proccessed_text)
+    UploadExtractedText(processed_text, response_message["pmcId"])
+    output_message.set(json.dumps(response_message))
+
+def ProcessPdfText(blob_contents: bytes) -> str:
+    """
+    Process the PDF blob contents and extract text.
+
+    Args:
+        blob_contents (bytes): The contents of the PDF blob
+
+    Returns:
+        str: Extracted text from the PDF
+    """
+
+    try:
+        pdf_file_data = io.BytesIO(blob_contents)
+        with pdfplumber.open(pdf_file_data) as pdf:
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text() + "\n"
+            return text.strip()
+    except Exception as e:
+        logging.error(f"Failed to process PDF: {str(e)}")
+        raise
+
+
+def IndexDocument(pdf_text: str) -> None:
+    """
+    Index the document text for further processing or storage.
+
+    Args:
+        text (str): The text to index
+
+    Raises:
+        NotImplementedError: This function is a placeholder and needs implementation
+    """
+    logging.info(f"Indexing document with {len(pdf_text)} characters")
+    logging.info("\nLoading and indexing PDF into ChromaDB...")
+    #pdf_file_data = io.BytesIO(pdf_text.encode('utf-8'))
+    #chroma_client = chromadb.Client()
+    docs = [line.strip() for line in pdf_text.split('\n') if len(line.strip()) > 20]
+    ids = [f"doc_{i}" for i in range(len(docs))]
+    
+    # embedding_func = SentenceTransformerEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+
+   
+    # collection = chroma_client.get_or_create_collection(
+    #     name="research_docs",
+    #     embedding_function=embedding_func
+    # )
+
+
+    # collection.add(documents=docs, ids=ids)
+    logging.info(f"Indexed {len(docs)} research documents.")
