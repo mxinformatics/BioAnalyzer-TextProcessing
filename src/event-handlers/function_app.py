@@ -98,8 +98,9 @@ def ExtractDocumentTextHandler(azservicebus: func.ServiceBusMessage, output_mess
 
     parsed_message = json.loads(message_body)
 
+    fileName = parsed_message.get("FileName")
     response_message = {
-        "fileName": parsed_message.get("FileName"),
+        "fileName": parsed_message.get("PmcId") + ".txt",
         "title": parsed_message.get("Title"),
         "pmcId": parsed_message.get("PmcId"),
         "doi": parsed_message.get("Doi"),
@@ -111,12 +112,12 @@ def ExtractDocumentTextHandler(azservicebus: func.ServiceBusMessage, output_mess
         logging.error("StorageContainerName environment variable not set")
         raise ValueError("StorageContainerName environment variable not set")
 
-    logging.info(f"Downloading blob: {response_message['fileName']} from container: {storage_container}")
-    blob_contents = download_blob_by_name(response_message["fileName"], storage_container)
+    logging.info(f"Downloading blob: {fileName} from container: {storage_container}")
+    blob_contents = download_blob_by_name(fileName, storage_container)
 
     processed_text = ProcessPdfText(blob_contents)
     logging.info(f"Processed text length: {len(processed_text)} characters")
-    #IndexDocument(proccessed_text)
+   
     UploadExtractedText(processed_text, response_message["pmcId"])
     output_message.set(json.dumps(response_message))
 
@@ -143,7 +144,40 @@ def ProcessPdfText(blob_contents: bytes) -> str:
         raise
 
 
-def IndexDocument(pdf_text: str) -> None:
+
+
+@app.service_bus_queue_trigger(arg_name="azservicebus", queue_name="process-extracted-text",
+                               connection="ServicebusListener")
+@app.service_bus_topic_output(arg_name="output_message", topic_name="embeddings-generated",
+                                connection="ServicebusSender")
+def ExtractedTextHandler(azservicebus: func.ServiceBusMessage,  output_message: func.Out[str]) -> None:
+
+    message_body = azservicebus.get_body().decode('utf-8')
+    logging.info('Received message: %s', message_body)
+
+    parsed_message = json.loads(message_body)
+
+    response_message = {
+        "fileName": parsed_message.get("fileName"),
+        "title": parsed_message.get("title"),
+        "pmcId": parsed_message.get("pmcId"),
+        "doi": parsed_message.get("doi"),
+    }
+
+    logging.info("Processing message: %s", response_message)
+    extracted_text_container = os.getenv("ExtractedTextContainer")
+    if not extracted_text_container:
+        logging.error("ExtracedTextContainer environment variable not set")
+        raise ValueError("ExtractedTextContainerName environment variable not set")
+
+    logging.info(f"Downloading blob: {response_message['fileName']} from container: {extracted_text_container}")
+    blob_contents = download_blob_by_name(response_message["fileName"], extracted_text_container)
+
+    IndexDocument(blob_contents.decode('utf-8'))
+    output_message.set(json.dumps(response_message))
+
+
+def IndexDocument(document_text: str) -> None:
     """
     Index the document text for further processing or storage.
 
@@ -153,11 +187,10 @@ def IndexDocument(pdf_text: str) -> None:
     Raises:
         NotImplementedError: This function is a placeholder and needs implementation
     """
-    logging.info(f"Indexing document with {len(pdf_text)} characters")
+    logging.info(f"Indexing document with {len(document_text)} characters")
     logging.info("\nLoading and indexing PDF into ChromaDB...")
-    #pdf_file_data = io.BytesIO(pdf_text.encode('utf-8'))
     #chroma_client = chromadb.Client()
-    docs = [line.strip() for line in pdf_text.split('\n') if len(line.strip()) > 20]
+    docs = [line.strip() for line in document_text.split('\n') if len(line.strip()) > 20]
     ids = [f"doc_{i}" for i in range(len(docs))]
     
     # embedding_func = SentenceTransformerEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
