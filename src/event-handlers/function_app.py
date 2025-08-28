@@ -13,7 +13,7 @@ import pdfplumber
 app = func.FunctionApp()
 
 
-def UploadExtractedText(text: str, pmcId: str) -> None:
+def UploadExtractedText(text: str, pmcId: str, title: str, page: int) -> None:
     """
     Upload the extracted text to an Azure Blob Storage container.
 
@@ -38,7 +38,7 @@ def UploadExtractedText(text: str, pmcId: str) -> None:
             raise ValueError("ExtractedTextContainer environment variable not set")
 
         # Create a blob client
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=f"{pmcId}.txt")
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=f"{pmcId}/{page}.txt")
 
         # Upload the text
         logging.info(f"Uploading extracted text to blob in container: {container_name}")
@@ -115,13 +115,13 @@ def ExtractDocumentTextHandler(azservicebus: func.ServiceBusMessage, output_mess
     logging.info(f"Downloading blob: {fileName} from container: {storage_container}")
     blob_contents = download_blob_by_name(fileName, storage_container)
 
-    processed_text = ProcessPdfText(blob_contents)
-    logging.info(f"Processed text length: {len(processed_text)} characters")
+    processed_text = ProcessPdfText(blob_contents, response_message["pmcId"], response_message["title"])
+    logging.info(f"Processed text length: {processed_text} pages")
    
-    UploadExtractedText(processed_text, response_message["pmcId"])
+    
     output_message.set(json.dumps(response_message))
 
-def ProcessPdfText(blob_contents: bytes) -> str:
+def ProcessPdfText(blob_contents: bytes, pmcId: str, title: str) -> int:
     """
     Process the PDF blob contents and extract text.
 
@@ -134,11 +134,13 @@ def ProcessPdfText(blob_contents: bytes) -> str:
 
     try:
         pdf_file_data = io.BytesIO(blob_contents)
+        page_number = 1
         with pdfplumber.open(pdf_file_data) as pdf:
-            text = ""
             for page in pdf.pages:
-                text += page.extract_text() + "\n"
-            return text.strip()
+                text = page.extract_text()
+                UploadExtractedText(text, pmcId, title, page_number)
+                page_number += 1
+            return page_number
     except Exception as e:
         logging.error(f"Failed to process PDF: {str(e)}")
         raise
