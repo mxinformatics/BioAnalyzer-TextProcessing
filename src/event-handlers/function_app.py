@@ -1,3 +1,5 @@
+from email.mime import text
+from typing import List
 import azure.functions as func
 import datetime
 import json
@@ -13,12 +15,12 @@ import pdfplumber
 app = func.FunctionApp()
 
 
-def UploadExtractedText(text: str, pmcId: str, title: str, page: int) -> None:
+def UploadExtractedText(extracted_text: List[str], pmcId: str, title: str) -> None:
     """
     Upload the extracted text to an Azure Blob Storage container.
 
     Args:
-        text (str): The text to upload
+        text (List[str]): The text to upload
 
     Raises:
         Exception: If blob upload fails
@@ -37,12 +39,15 @@ def UploadExtractedText(text: str, pmcId: str, title: str, page: int) -> None:
         if not container_name:
             raise ValueError("ExtractedTextContainer environment variable not set")
 
-        # Create a blob client
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=f"{pmcId}/{page}.txt")
+        page = 0
+        for text in extracted_text:
+            page += 1
+            logging.info(f"Uploading text for page {page} of document {pmcId}")
+            # Create a blob client
+            blob_client = blob_service_client.get_blob_client(container=container_name, blob=f"{pmcId}/{page}.txt")
 
-        # Upload the text
-        logging.info(f"Uploading extracted text to blob in container: {container_name}")
-        blob_client.upload_blob(text, overwrite=True)
+            # Upload the text
+            blob_client.upload_blob(text, overwrite=True)
 
         logging.info("Successfully uploaded extracted text to blob")
     except Exception as e:
@@ -115,13 +120,13 @@ def ExtractDocumentTextHandler(azservicebus: func.ServiceBusMessage, output_mess
     logging.info(f"Downloading blob: {fileName} from container: {storage_container}")
     blob_contents = download_blob_by_name(fileName, storage_container)
 
-    processed_text = ProcessPdfText(blob_contents, response_message["pmcId"], response_message["title"])
+    processed_text = ProcessPdfText(blob_contents)
     logging.info(f"Processed text length: {processed_text} pages")
-   
-    
+    UploadExtractedText(processed_text, response_message["pmcId"], response_message["title"])
+
     output_message.set(json.dumps(response_message))
 
-def ProcessPdfText(blob_contents: bytes, pmcId: str, title: str) -> int:
+def ProcessPdfText(blob_contents: bytes) -> List[str]:
     """
     Process the PDF blob contents and extract text.
 
@@ -134,13 +139,12 @@ def ProcessPdfText(blob_contents: bytes, pmcId: str, title: str) -> int:
 
     try:
         pdf_file_data = io.BytesIO(blob_contents)
-        page_number = 1
+        extracted_text = []
         with pdfplumber.open(pdf_file_data) as pdf:
             for page in pdf.pages:
                 text = page.extract_text()
-                UploadExtractedText(text, pmcId, title, page_number)
-                page_number += 1
-            return page_number
+                extracted_text.append(text)
+        return extracted_text
     except Exception as e:
         logging.error(f"Failed to process PDF: {str(e)}")
         raise
