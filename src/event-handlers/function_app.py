@@ -200,8 +200,7 @@ def IndexDocument(document_text: str, pmc_id: str, title: str, blob_name: str, d
     """
     logging.info(f"Indexing document with {len(document_text)} characters")
     logging.info("\nSending document to Azure Search AI for indexing...")
-    documentSummary = SummarizeDocument(pmc_id, title, blob_name, doi)
-    upload_document_to_azure_search(document_text, documentSummary, pmc_id, title, blob_name, doi)
+    upload_document_to_azure_search(document_text,  pmc_id, title, blob_name, doi)
     # Need variables to index - set metadata pmcid, title, blob name, doi
 
     logging.info(f"Indexed {blob_name} research document.")
@@ -254,13 +253,12 @@ def getDocumentPageFromFileName(blob_name: str) -> int:
         logging.error(f"Failed to extract page number from blob name {blob_name}: {str(e)}")
         raise
 
-def upload_document_to_azure_search(document_text: str, document_summary: str, pmc_id: str, title: str, blob_name: str, doi: str) -> None:
+def upload_document_to_azure_search(document_text: str, pmc_id: str, title: str, blob_name: str, doi: str) -> None:
     """
     Upload the document to Azure Search for indexing.
 
     Args:
         document_text (str): The text of the document
-        document_summary (str): The summary of the document
         pmc_id (str): The PMC ID of the document
         title (str): The title of the document
         blob_name (str): The blob name of the document
@@ -272,6 +270,7 @@ def upload_document_to_azure_search(document_text: str, document_summary: str, p
     try:
         logging.info(f"Uploading document {blob_name} to Azure Search...")
 
+        document_summary = get_summary(document_text)
         pageNumber = getDocumentPageFromFileName(blob_name)
         record_to_upload = {}
         record_to_upload["id"] = f"{pmc_id}-{pageNumber}"
@@ -282,7 +281,7 @@ def upload_document_to_azure_search(document_text: str, document_summary: str, p
         record_to_upload["pageNumber"] = pageNumber
         record_to_upload["fileName"] = blob_name
         record_to_upload["summary"] = document_summary
-        record_to_upload["vector"] = getEmbeddedSummary(document_text)
+        record_to_upload["vector"] = getEmbeddedSummary(document_summary)
 
         search_client = SearchClient(
             endpoint=os.getenv("AI_SEARCH_ENDPOINT"), # type: ignore
@@ -299,23 +298,22 @@ def upload_document_to_azure_search(document_text: str, document_summary: str, p
         logging.error(f"Failed to upload document {blob_name} to Azure Search: {str(e)}")
         raise
 
-def getEmbeddedSummary(document_text: str) -> List[float]:
+def get_summary(document_text: str) -> str:
     """
-    Get the embedded summary of the document using a sentence transformer model.
+    Get the summary of the document using Azure OpenAI.
 
     Args:
         document_text (str): The text of the document
 
     Returns:
-        List[float]: The embedded summary of the document
+        str: The summary of the document
 
     Raises:
-        Exception: If embedding fails
+        Exception: If summarization fails
     """
     try:
-        openai_client = OpenAI(api_key=os.getenv("OpenAIKey"))
+        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Use OpenAI to generate a short summary of the text before generating embeddings
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -327,9 +325,30 @@ def getEmbeddedSummary(document_text: str) -> List[float]:
         )
 
         summary = response.choices[0].message.content
+        return summary
+    
+    except Exception as e:
+        logging.error(f"Failed to get summary: {str(e)}")
+        raise
+
+def getEmbeddedSummary(summary_text: str) -> List[float]:
+    """
+    Get the embedded summary of the document using a sentence transformer model.
+
+    Args:
+        summary_text (str): The text of the document
+
+    Returns:
+        List[float]: The embedded summary of the document
+
+    Raises:
+        Exception: If embedding fails
+    """
+    try:
+        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         response = openai_client.embeddings.create(
-            input=summary,
+            input=summary_text,
             model="text-embedding-3-small",
             dimensions=1536
 
