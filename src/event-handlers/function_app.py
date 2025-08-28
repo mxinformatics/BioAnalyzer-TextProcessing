@@ -9,6 +9,9 @@ from azure.storage.blob import BlobServiceClient
 import io
 import chromadb
 import pdfplumber
+from azure.search.documents import SearchClient
+from azure.core.credentials import AzureKeyCredential
+from openai import OpenAI
 #from sentence_transformers import SentenceTransformer
 #from langchain.embeddings import SentenceTransformerEmbeddings
 
@@ -105,7 +108,7 @@ def ExtractDocumentTextHandler(azservicebus: func.ServiceBusMessage, output_mess
 
     fileName = parsed_message.get("FileName")
     response_message = {
-        "fileName": parsed_message.get("PmcId") + ".txt",
+        "fileNames": [],
         "title": parsed_message.get("Title"),
         "pmcId": parsed_message.get("PmcId"),
         "doi": parsed_message.get("Doi"),
@@ -124,6 +127,7 @@ def ExtractDocumentTextHandler(azservicebus: func.ServiceBusMessage, output_mess
     logging.info(f"Processed text length: {processed_text} pages")
     UploadExtractedText(processed_text, response_message["pmcId"], response_message["title"])
 
+    response_message["fileNames"] = [f"{response_message['pmcId']}/{i + 1}.txt" for i in range(len(processed_text))]
     output_message.set(json.dumps(response_message))
 
 def ProcessPdfText(blob_contents: bytes) -> List[str]:
@@ -164,7 +168,7 @@ def ExtractedTextHandler(azservicebus: func.ServiceBusMessage,  output_message: 
     parsed_message = json.loads(message_body)
 
     response_message = {
-        "fileName": parsed_message.get("fileName"),
+        "fileNames": parsed_message.get("fileNames"),
         "title": parsed_message.get("title"),
         "pmcId": parsed_message.get("pmcId"),
         "doi": parsed_message.get("doi"),
@@ -176,37 +180,149 @@ def ExtractedTextHandler(azservicebus: func.ServiceBusMessage,  output_message: 
         logging.error("ExtracedTextContainer environment variable not set")
         raise ValueError("ExtractedTextContainerName environment variable not set")
 
-    logging.info(f"Downloading blob: {response_message['fileName']} from container: {extracted_text_container}")
-    blob_contents = download_blob_by_name(response_message["fileName"], extracted_text_container)
+    for file_name in response_message["fileNames"]:
+        logging.info(f"Downloading blob: {file_name} from container: {extracted_text_container}")
+        blob_contents = download_blob_by_name(file_name, extracted_text_container)
+        IndexDocument(blob_contents.decode('utf-8'), response_message["pmcId"], response_message["title"], file_name, response_message["doi"])
 
-    IndexDocument(blob_contents.decode('utf-8'))
     output_message.set(json.dumps(response_message))
 
 
-def IndexDocument(document_text: str) -> None:
+def IndexDocument(document_text: str, pmc_id: str, title: str, blob_name: str, doi: str) -> None:
     """
-    Index the document text for further processing or storage.
+    Submit the document to Azure Search AI for indexing.
 
     Args:
         text (str): The text to index
 
     Raises:
-        NotImplementedError: This function is a placeholder and needs implementation
+        ProcessingErrors: If the document processing fails
     """
     logging.info(f"Indexing document with {len(document_text)} characters")
-    logging.info("\nLoading and indexing PDF into ChromaDB...")
-    #chroma_client = chromadb.Client()
-    docs = [line.strip() for line in document_text.split('\n') if len(line.strip()) > 20]
-    ids = [f"doc_{i}" for i in range(len(docs))]
+    logging.info("\nSending document to Azure Search AI for indexing...")
+    documentSummary = SummarizeDocument(pmc_id, title, blob_name, doi)
+    upload_document_to_azure_search(document_text, documentSummary, pmc_id, title, blob_name, doi)
+    # Need variables to index - set metadata pmcid, title, blob name, doi
+
+    logging.info(f"Indexed {blob_name} research document.")
+
+def SummarizeDocument(pmc_id: str, title: str, blob_name: str, doi: str) -> str:
+    """
+    Summarize the document using - manually - Look into using Azure OpenAI to generate page summary.
+
+    Args:
+        pmc_id (str): The PMC ID of the document
+        title (str): The title of the document
+        blob_name (str): The blob name of the document
+        doi (str): The DOI of the document
+
+    Returns:
+        str: The summary of the document
+
+    Raises:
+        Exception: If summarization fails
+    """
+    try:
+        # Placeholder for actual summarization logic using Azure OpenAI
+        summary = f"""
+        Title: {title}
+        PMC ID: {pmc_id}
+        Blob Name: {blob_name}
+        DOI: {doi}
+        """
+        logging.info(f"Generated summary for document {pmc_id}")
+        return summary
+    except Exception as e:
+        logging.error(f"Failed to summarize document {pmc_id}: {str(e)}")
+        raise
+
+def getDocumentPageFromFileName(blob_name: str) -> int:
+    """
+    Get the page number of the document from its blob name.
+
+    Args:
+        blob_name (str): The name of the blob
+
+    Returns:
+        int: The page number of the document
+    """
+    try:
+        # Extract page number from blob name (assuming format is like "docname/1.pdf")
+        page_number = int(blob_name.split("/")[-1].split(".")[0])
+        return page_number
+    except Exception as e:
+        logging.error(f"Failed to extract page number from blob name {blob_name}: {str(e)}")
+        raise
+
+def upload_document_to_azure_search(document_text: str, document_summary: str, pmc_id: str, title: str, blob_name: str, doi: str) -> None:
+    """
+    Upload the document to Azure Search for indexing.
+
+    Args:
+        document_text (str): The text of the document
+        document_summary (str): The summary of the document
+        pmc_id (str): The PMC ID of the document
+        title (str): The title of the document
+        blob_name (str): The blob name of the document
+        doi (str): The DOI of the document
+
+    Raises:
+        Exception: If the upload fails
+    """
+    try:
+        logging.info(f"Uploading document {blob_name} to Azure Search...")
+
+        pageNumber = getDocumentPageFromFileName(blob_name)
+        record_to_upload = {}
+        record_to_upload["id"] = f"{pmc_id}-{pageNumber}"
+        record_to_upload["pmcId"] = pmc_id
+        record_to_upload["doi"] = doi
+        record_to_upload["title"] = title
+        record_to_upload["pageText"] = document_text
+        record_to_upload["pageNumber"] = pageNumber
+        record_to_upload["fileName"] = blob_name
+        record_to_upload["summary"] = document_summary
+        record_to_upload["vector"] = getEmbeddedSummary(document_summary)
+
+        search_client = SearchClient(
+            endpoint=os.getenv("AI_SEARCH_ENDPOINT"), # type: ignore
+            index_name=os.getenv("AI_SEARCH_INDEX_NAME"), # type: ignore
+            credential=AzureKeyCredential(os.getenv("AI_SEARCH_KEY")), #type: ignore
+        )
+
+        search_client.merge_or_upload_documents(
+            documents=[record_to_upload]
+        )
+
+        
+    except Exception as e:
+        logging.error(f"Failed to upload document {blob_name} to Azure Search: {str(e)}")
+        raise
+
+def getEmbeddedSummary(document_text: str) -> List[float]:
+    """
+    Get the embedded summary of the document using a sentence transformer model.
+
+    Args:
+        document_text (str): The text of the document
+
+    Returns:
+        List[float]: The embedded summary of the document
+
+    Raises:
+        Exception: If embedding fails
+    """
+    try:
+        openai_client = OpenAI(api_key=os.getenv("OpenAIKey"))
+
+        response = openai_client.embeddings.create(
+            input=document_text,
+            model="text-embedding-3-small",
+            dimensions=1536
+
+        )
+        return response.data[0].embedding
     
-    # embedding_func = SentenceTransformerEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-
-   
-    # collection = chroma_client.get_or_create_collection(
-    #     name="research_docs",
-    #     embedding_function=embedding_func
-    # )
-
-
-    # collection.add(documents=docs, ids=ids)
-    logging.info(f"Indexed {len(docs)} research documents.")
+    except Exception as e:
+        logging.error(f"Failed to get embedded summary: {str(e)}")
+        raise

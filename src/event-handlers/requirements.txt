@@ -8,3 +8,6 @@ pdfplumber
 chromadb
 sentence-transformers
 langchain
+openai~=1.102
+azure-core~=1.35
+azure-search-documents~=11.5
