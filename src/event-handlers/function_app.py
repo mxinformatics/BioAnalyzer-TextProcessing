@@ -282,7 +282,7 @@ def upload_document_to_azure_search(document_text: str, document_summary: str, p
         record_to_upload["pageNumber"] = pageNumber
         record_to_upload["fileName"] = blob_name
         record_to_upload["summary"] = document_summary
-        record_to_upload["vector"] = getEmbeddedSummary(document_summary)
+        record_to_upload["vector"] = getEmbeddedSummary(document_text)
 
         search_client = SearchClient(
             endpoint=os.getenv("AI_SEARCH_ENDPOINT"), # type: ignore
@@ -315,8 +315,21 @@ def getEmbeddedSummary(document_text: str) -> List[float]:
     try:
         openai_client = OpenAI(api_key=os.getenv("OpenAIKey"))
 
+        # Use OpenAI to generate a short summary of the text before generating embeddings
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"As an experienced biological researcher. Summarize the following text:\n\n{document_text}"
+                }
+            ]
+        )
+
+        summary = response.choices[0].message.content
+
         response = openai_client.embeddings.create(
-            input=document_text,
+            input=summary,
             model="text-embedding-3-small",
             dimensions=1536
 
