@@ -7,7 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "azure-functions>=1.23.0",
     "azure-storage-blob>=12.25.1",
-    "chromadb>=1.0.15",
     "langchain>=0.3.26",
     "pdfplumber>=0.11.7",
     "sentence-transformers>=5.0.0",

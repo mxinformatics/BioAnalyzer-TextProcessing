@@ -5,7 +5,6 @@
 azure-functions
 azure-storage-blob
 pdfplumber
-chromadb
 sentence-transformers
 langchain
 openai~=1.102

@@ -1,13 +1,11 @@
 from email.mime import text
 from typing import List
 import azure.functions as func
-import datetime
 import json
 import logging
 import os
 from azure.storage.blob import BlobServiceClient
 import io
-import chromadb
 import pdfplumber
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
@@ -205,35 +203,6 @@ def IndexDocument(document_text: str, pmc_id: str, title: str, blob_name: str, d
 
     logging.info(f"Indexed {blob_name} research document.")
 
-def SummarizeDocument(pmc_id: str, title: str, blob_name: str, doi: str) -> str:
-    """
-    Summarize the document using - manually - Look into using Azure OpenAI to generate page summary.
-
-    Args:
-        pmc_id (str): The PMC ID of the document
-        title (str): The title of the document
-        blob_name (str): The blob name of the document
-        doi (str): The DOI of the document
-
-    Returns:
-        str: The summary of the document
-
-    Raises:
-        Exception: If summarization fails
-    """
-    try:
-        # Placeholder for actual summarization logic using Azure OpenAI
-        summary = f"""
-        Title: {title}
-        PMC ID: {pmc_id}
-        Blob Name: {blob_name}
-        DOI: {doi}
-        """
-        logging.info(f"Generated summary for document {pmc_id}")
-        return summary
-    except Exception as e:
-        logging.error(f"Failed to summarize document {pmc_id}: {str(e)}")
-        raise
 
 def getDocumentPageFromFileName(blob_name: str) -> int:
     """
